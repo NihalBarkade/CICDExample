@@ -1,4 +1,4 @@
-name: CI-CD-Pipeline
+name: CI/CD Pipeline
 
 on:
   push:
@@ -6,36 +6,45 @@ on:
       - main
 
 env:
-  AWS_REGION: ap-south-1
-  ECR_REPOSITORY: student-performance-repo
+  AWS_REGION: ap-south-1                     # Change this to your region
+  ECR_REPOSITORY: student-performance-repo   # Your ECR repository name
   IMAGE_TAG: latest
 
 jobs:
   integration:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+    name: Integration Test
+    runs-on: self-hosted
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-  build-and-push-ecr-image:
-    needs: integration
-    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: |
+          echo "Running tests..." 
+          # Add your test command here
+          # Example: pytest
+
+  build-and-push-ecr:
+    name: Build and Push Docker image to ECR
+    runs-on: self-hosted
+    needs: integration
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -47,15 +56,17 @@ jobs:
 
       - name: Build, tag, and push image to ECR
         run: |
-          IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-          docker build -t $IMAGE_URI .
-          docker push $IMAGE_URI
+          REPO_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          docker build -t $REPO_URI:${{ env.IMAGE_TAG }} .
+          docker push $REPO_URI:${{ env.IMAGE_TAG }}
 
-  deploy-to-ec2:
-    needs: build-and-push-ecr-image
-    runs-on: ubuntu-latest
+  deploy:
+    name: Deploy to EC2
+    runs-on: self-hosted
+    needs: build-and-push-ecr
+
     steps:
-      - name: Deploy to EC2 via SSH
+      - name: SSH and Deploy
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -64,6 +75,5 @@ jobs:
           script: |
             aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
             docker pull ${{ secrets.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-            docker stop mlapp || true
-            docker rm mlapp || true
-            docker run -d --name mlapp -p 80:80 ${{ secrets.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            docker stop ml_app || true && docker rm ml_app || true
+            docker run -d --name ml_app -p 80:80 ${{ secrets.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
