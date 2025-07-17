@@ -76,5 +76,5 @@ jobs:
             docker stop student-app || true && docker rm student-app || true
             
             echo "Running new container..."
-            docker run -d -p 80:5000 --name student-app \
+            docker run -d -p 80:8080 --name student-app \
               ${{ secrets.AWS_ECR_LOGIN_URL }}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
