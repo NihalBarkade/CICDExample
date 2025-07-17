@@ -1,26 +1,18 @@
-name: CI/CD Pipeline
+name: CI-CD Pipeline for ML Project
 
 on:
   push:
-    branches:
-      - main
-
-env:
-  AWS_REGION: ap-south-1                     # Change this to your region
-  ECR_REPOSITORY: student-performance-repo   # Your ECR repository name
-  IMAGE_TAG: latest
+    branches: [ main ]
 
 jobs:
   integration:
-    name: Integration Test
     runs-on: self-hosted
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
@@ -28,52 +20,61 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run unit tests
+      - name: Run Tests (optional)
         run: |
-          echo "Running tests..." 
-          # Add your test command here
-          # Example: pytest
+          echo "Add your tests here"
 
-  build-and-push-ecr:
-    name: Build and Push Docker image to ECR
-    runs-on: self-hosted
+  build-and-push-ecr-image:
     needs: integration
-
+    runs-on: self-hosted
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag, and push image to ECR
         run: |
-          REPO_URI=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
-          docker build -t $REPO_URI:${{ env.IMAGE_TAG }} .
-          docker push $REPO_URI:${{ env.IMAGE_TAG }}
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+          docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_LOGIN_URL }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.ECR_REPOSITORY_NAME }} .
+
+      - name: Tag Docker image
+        run: |
+          docker tag ${{ secrets.ECR_REPOSITORY_NAME }}:latest \
+          ${{ secrets.AWS_ECR_LOGIN_URL }}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push ${{ secrets.AWS_ECR_LOGIN_URL }}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
 
   deploy:
-    name: Deploy to EC2
+    needs: build-and-push-ecr-image
     runs-on: self-hosted
-    needs: build-and-push-ecr
-
     steps:
-      - name: SSH and Deploy
+      - name: Deploy on EC2 via SSH
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
-            docker pull ${{ secrets.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
-            docker stop ml_app || true && docker rm ml_app || true
-            docker run -d --name ml_app -p 80:80 ${{ secrets.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+            echo "Pulling image from ECR..."
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+            docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_LOGIN_URL }}
+            docker pull ${{ secrets.AWS_ECR_LOGIN_URL }}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
+            
+            echo "Stopping and removing old container (if any)..."
+            docker stop student-app || true && docker rm student-app || true
+            
+            echo "Running new container..."
+            docker run -d -p 80:5000 --name student-app \
+              ${{ secrets.AWS_ECR_LOGIN_URL }}/${{ secrets.ECR_REPOSITORY_NAME }}:latest
